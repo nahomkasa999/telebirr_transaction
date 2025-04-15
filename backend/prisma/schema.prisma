@@ -15,6 +15,7 @@ model Course {
   price       Int
   Enrollment  Enrollment[]
   Section     Section[]
+  Transaction Transaction[] // back-reference to see what transactions unlocked this
 }
 
 model Enrollment {
@@ -62,6 +63,7 @@ model User {
   email      String       @unique
   role       UserRole     @default(USER)
   Enrollment Enrollment[]
+  Transaction Transaction[] // see which transactions this user used
 }
 
 model Video {
@@ -70,6 +72,18 @@ model Video {
   cloudinaryUrl String
   sectionId     String
   Section       Section @relation(fields: [sectionId], references: [id])
+}
+
+model Transaction {
+  id                String   @id @default(uuid())
+  transactionId     String   @unique
+  transactionAmount Int
+  used              Boolean  @default(false)
+  usedById          String?  // user who used this (nullable if unused)
+  courseId          String?  // course unlocked by this (nullable if unused)
+  usedBy            User?    @relation(fields: [usedById], references: [id])
+  course            Course?  @relation(fields: [courseId], references: [id])
+  createdAt         DateTime @default(now())
 }
 
 enum UserRole {
