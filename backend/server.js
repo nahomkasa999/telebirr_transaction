@@ -1,37 +1,52 @@
-const express = require('express');
-const bodyParser = require('body-parser');
-const cors = require('cors');
+import express from "express"
+import bodyParser from "body-parser"
+import cors from "cors"
+import { PrismaClient } from "./prisma/generated/prisma/client.js"
 
-app.use(cors());
+const app = express()
+const PORT = 3000
+const prisma = new PrismaClient()
 
-const app = express();
-const PORT = 3000;
+app.use(bodyParser.json())
+app.use(cors())
 
-// Middleware
-app.use(bodyParser.json());
+let transactions = []
 
-// In-memory storage for transactions
-let transactions = [];
-
-// Endpoint to receive transaction data
-app.post('/transactions', (req, res) => {
-  const { transactionId, paidPrice } = req.body;
+app.post('/transactions', async (req, res) => {
+  const { transactionId, paidPrice } = req.body
 
   if (!transactionId || !paidPrice) {
-    return res.status(400).json({ error: 'Missing transactionId or paidPrice' });
+    return res.status(400).json({ error: 'Missing transactionId or paidPrice' })
   }
 
-  transactions.push({ transactionId, paidPrice });
-  console.log(transactions)
-  res.status(201).json({ message: 'Transaction added successfully' });
-});
+  try {
+    const transaction = await prisma.transaction.create({
+      data: {
+        transactionId,
+        transactionAmount: paidPrice
+      }
+    })
 
-// Endpoint to fetch all transactions
-app.get('/transactions', (req, res) => {
-  res.status(200).json(transactions);
-});
+    transactions.push({ transactionId, paidPrice })
+    console.log(transactions)
 
-// Start the server
+    return res.status(201).json(transaction)
+  } catch (error) {
+    return res.status(500).json({ error: "Something went wrong", detail: error.message })
+  }
+})
+
+app.get('/transactions', async (req, res) => {
+  try {
+    const transactions = await prisma.transaction.findMany()
+    return res.status(200).json(transactions)
+  } catch (error) {
+    console.error(error)
+    res.status(500).json({error :"internal error"})
+  }
+
+})
+
 app.listen(PORT, () => {
-  console.log(`Server is running on http://localhost:${PORT}`);
-});
+  console.log(`Server is running on http://localhost:${PORT}`)
+})

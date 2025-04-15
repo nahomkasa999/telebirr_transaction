@@ -6,6 +6,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon server.js"
   },
+  "type": "module",
   "keywords": [],
   "author": "",
   "license": "ISC",
@@ -14,7 +15,9 @@
     "@prisma/client": "^6.6.0",
     "cors": "^2.8.5",
     "express": "^5.1.0",
-    "nodemon": "^3.1.9",
+    "nodemon": "^3.1.9"
+  },
+  "devDependencies": {
     "prisma": "^6.6.0"
   }
 }
