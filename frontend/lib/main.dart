@@ -1,3 +1,5 @@
+import 'dart:ffi';
+
 import 'package:flutter/material.dart';
 import 'package:another_telephony/telephony.dart';
 import 'package:http/http.dart' as http;
@@ -5,6 +7,7 @@ import 'dart:convert';
 import "dart:math";
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'dart:async' as async;
 
 String generateRandomTransactionNumber() {
   const String chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -17,10 +20,6 @@ String generateRandomTransactionNumber() {
 
 void main() {
   runApp(MyApp());
-}
-
-class Timer {
-  static void periodic(Duration duration, Null Function(dynamic _) param1) {}
 }
 
 class MyApp extends StatelessWidget {
@@ -38,6 +37,7 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   final Telephony telephony = Telephony.instance;
   List<String> transactionNumbers = [];
+  List<String> locallystored = [];
 
   Future<void> getTransctionValues() async {
     final url = Uri.parse("http://localhost:3000/transactions");
@@ -47,6 +47,7 @@ class _HomePageState extends State<HomePage> {
         final List<dynamic> data = jsonDecode(response.body);
         setState(() {
           transactionNumbers.clear();
+
           for (var transaction in data) {
             transactionNumbers.add(
               '${transaction['transactionAmount']} birr - ${transaction['transactionId']}',
@@ -70,39 +71,49 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    //checkNetworkAndSync(); // Check and sync transactions when the app starts
-    loadSavedTransactions();
-    // You could also schedule a periodic check for network connectivity:
-    Timer.periodic(Duration(minutes: 10), (_) {
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
       checkNetworkAndSync();
+      loadSavedTransactions();
+      getTransctionValues();
+      listenForIncomingSms();
     });
 
-    getTransctionValues(); // Get the transactions from the server
-    listenForIncomingSms(); // Start listening to incoming SMS
+    async.Timer.periodic(Duration(seconds: 10), (_) {
+      checkNetworkAndSync();
+    });
   }
 
   Future<void> checkNetworkAndSync() async {
-    ConnectivityResult result = await Connectivity().checkConnectivity();
+    print("checking connection");
+    try {
+      final List<ConnectivityResult> connectivityResult =
+          await (Connectivity().checkConnectivity());
 
-    // If the device is online, try to sync the transactions
-    if (result == ConnectivityResult.mobile ||
-        result == ConnectivityResult.wifi) {
-      await syncTransactionsToServer();
-    } else {
-      print("No internet connection. Transactions will be synced later.");
+      if (connectivityResult.contains(ConnectivityResult.mobile)) {
+        print("Mobile network available.");
+        await syncTransactionsToServer();
+      } else if (connectivityResult.contains(ConnectivityResult.wifi)) {
+        print("Wi-Fi is available.");
+        await syncTransactionsToServer();
+      }
+    } catch (e) {
+      print("Error checking network or syncing transactions: $e");
     }
   }
 
   Future<List<String>> getSavedTransactions() async {
     final prefs = await SharedPreferences.getInstance();
     List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
+    print("the data saved on the localstorage is $savedTransactions");
     return savedTransactions;
   }
 
   Future<void> loadSavedTransactions() async {
+    
     List<String> savedTransactions = await getSavedTransactions();
     setState(() {
-      transactionNumbers.addAll(savedTransactions);
+      locallystored.addAll(savedTransactions);
     });
   }
 
@@ -124,43 +135,49 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> syncTransactionsToServer() async {
-    final prefs = await SharedPreferences.getInstance();
-    List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
+  final prefs = await SharedPreferences.getInstance();
+  List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
 
-    if (savedTransactions.isNotEmpty) {
-      final url = Uri.parse("http://localhost:3000/transactions");
+  print(savedTransactions);
 
-      // Loop through each saved transaction and post it to the server
-      for (String transaction in savedTransactions) {
-        // You may want to extract the transaction ID and amount here if it's formatted as 'amount - id'
-        List<String> transactionParts = transaction.split(' - ');
-        String paidPrice = transactionParts[0];
-        String transactionId = transactionParts[1];
+  if (savedTransactions.isNotEmpty) {
+    final url = Uri.parse("http://localhost:3000/transactions");
 
-        final response = await http.post(
-          url,
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'transactionId': transactionId,
-            'paidPrice': paidPrice,
-          }),
-        );
+    List<String> toRemove = [];
 
-        if (response.statusCode == 201) {
-          // If successful, remove the transaction from local storage
-          savedTransactions.remove(transaction);
-        } else {
-          // If the request fails, we don't remove the transaction and try again later
-          print("Failed to send transaction: $transaction");
-        }
+    // Loop through each saved transaction and post it to the server
+    for (String transaction in List.from(savedTransactions)) { // Use a copy of the list
+      // Extract the transaction ID and amount
+      List<String> transactionParts = transaction.split(' - ');
+      List<String> paidPricearray = transactionParts[0].split(" ");
+      int paidPrice = int.parse(paidPricearray[0]);
+      String transactionId = transactionParts[1];
+
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'transactionId': transactionId,
+          'paidPrice': paidPrice,
+        }),
+      );
+
+      if (response.statusCode == 201) {
+        // If successful, mark the transaction for removal
+        toRemove.add(transaction);
+      } else {
+        print("Failed to send transaction: $transaction");
       }
-
-      // Update the local storage with the remaining transactions (if any failed)
-      await prefs.setStringList('transactions', savedTransactions);
     }
-  }
 
-  // Function to listen for incoming SMS
+    // Remove the marked transactions after the loop
+    savedTransactions.removeWhere((transaction) => toRemove.contains(transaction));
+
+    // Update the local storage with the remaining transactions
+    await prefs.setStringList('transactions', savedTransactions);
+  }
+}
+
   void listenForIncomingSms() async {
     print("listening messages");
 
@@ -202,7 +219,6 @@ class _HomePageState extends State<HomePage> {
     // }
   }
 
-  // Function to extract transaction number using regex
   String extractTransactionNumber(String message) {
     RegExp regExp = RegExp(r"Transaction number is (\w+)");
     RegExpMatch? match = regExp.firstMatch(message);
@@ -212,7 +228,6 @@ class _HomePageState extends State<HomePage> {
     }
     return '';
   }
-  //0936453956
 
   Map<String, String> extractTransactionDetails(String message) {
     RegExp urlRegExp = RegExp(r"https?://[^\s]+/(\w+)");
@@ -228,10 +243,12 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> sendTransaction(String transactionId, String paidPrice) async {
-    ConnectivityResult result = await Connectivity().checkConnectivity();
+    final List<ConnectivityResult> connectivityResult =
+        await (Connectivity().checkConnectivity());
 
-    if (result == ConnectivityResult.mobile ||
-        result == ConnectivityResult.wifi) {
+    if (connectivityResult.contains(ConnectivityResult.mobile) ||
+        connectivityResult.contains(ConnectivityResult.wifi)) {
+      print("send to db $transactionId");
       final url = Uri.parse('http://localhost:3000/transactions');
       final response = await http.post(
         url,
@@ -248,12 +265,13 @@ class _HomePageState extends State<HomePage> {
         await saveTransactionLocally(transactionId, paidPrice);
       }
     } else {
-      print('No internet connection. Saving transaction locally.');
+      print(
+        'No internet connection. Saving transaction locally. $transactionId  $paidPrice',
+      );
       await saveTransactionLocally(transactionId, paidPrice);
     }
   }
 
-  // Function to handle background messages
   @pragma('vm:entry-point')
   static void backgroundMessageHandler(SmsMessage message) async {
     // Handle message when the app is in the background
@@ -264,15 +282,32 @@ class _HomePageState extends State<HomePage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: Text('SMS Listener')),
-      body: Stack(
-        children: [
-          ListView.builder(
-            itemCount: transactionNumbers.length,
-            itemBuilder: (context, index) {
-              return ListTile(title: Text(transactionNumbers[index]));
-            },
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(8.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                "On Database",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              Divider(),
+              ...transactionNumbers.map(
+                (transaction) => ListTile(title: Text(transaction)),
+              ),
+              SizedBox(height: 20),
+              Text(
+                "On LocalStorage",
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              Divider(),
+              ...locallystored.map(
+                (transaction) => ListTile(title: Text(transaction)),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: () {
@@ -281,9 +316,7 @@ class _HomePageState extends State<HomePage> {
         child: Icon(Icons.message),
         tooltip: 'Start Listening for SMS',
       ),
-      floatingActionButtonLocation:
-          FloatingActionButtonLocation
-              .endFloat, // You can change this to centerFloat if needed
+      floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
     );
   }
 }
