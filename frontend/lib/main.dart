@@ -3,6 +3,8 @@ import 'package:another_telephony/telephony.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import "dart:math";
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
 
 String generateRandomTransactionNumber() {
   const String chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -15,6 +17,10 @@ String generateRandomTransactionNumber() {
 
 void main() {
   runApp(MyApp());
+}
+
+class Timer {
+  static void periodic(Duration duration, Null Function(dynamic _) param1) {}
 }
 
 class MyApp extends StatelessWidget {
@@ -64,9 +70,94 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    getTransctionValues();
-    // Start listening to incoming SMS
-    listenForIncomingSms();
+    //checkNetworkAndSync(); // Check and sync transactions when the app starts
+    loadSavedTransactions();
+    // You could also schedule a periodic check for network connectivity:
+    Timer.periodic(Duration(minutes: 10), (_) {
+      checkNetworkAndSync();
+    });
+
+    getTransctionValues(); // Get the transactions from the server
+    listenForIncomingSms(); // Start listening to incoming SMS
+  }
+
+  Future<void> checkNetworkAndSync() async {
+    ConnectivityResult result = await Connectivity().checkConnectivity();
+
+    // If the device is online, try to sync the transactions
+    if (result == ConnectivityResult.mobile ||
+        result == ConnectivityResult.wifi) {
+      await syncTransactionsToServer();
+    } else {
+      print("No internet connection. Transactions will be synced later.");
+    }
+  }
+
+  Future<List<String>> getSavedTransactions() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
+    return savedTransactions;
+  }
+
+  Future<void> loadSavedTransactions() async {
+    List<String> savedTransactions = await getSavedTransactions();
+    setState(() {
+      transactionNumbers.addAll(savedTransactions);
+    });
+  }
+
+  Future<void> saveTransactionLocally(
+    String transactionId,
+    String paidPrice,
+  ) async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
+
+    // Create the transaction string
+    String transactionData = '$paidPrice birr - $transactionId';
+
+    // Add the transaction to the saved list
+    savedTransactions.add(transactionData);
+
+    // Save the updated list back to shared preferences
+    await prefs.setStringList('transactions', savedTransactions);
+  }
+
+  Future<void> syncTransactionsToServer() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String>? savedTransactions = prefs.getStringList('transactions') ?? [];
+
+    if (savedTransactions.isNotEmpty) {
+      final url = Uri.parse("http://localhost:3000/transactions");
+
+      // Loop through each saved transaction and post it to the server
+      for (String transaction in savedTransactions) {
+        // You may want to extract the transaction ID and amount here if it's formatted as 'amount - id'
+        List<String> transactionParts = transaction.split(' - ');
+        String paidPrice = transactionParts[0];
+        String transactionId = transactionParts[1];
+
+        final response = await http.post(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            'transactionId': transactionId,
+            'paidPrice': paidPrice,
+          }),
+        );
+
+        if (response.statusCode == 201) {
+          // If successful, remove the transaction from local storage
+          savedTransactions.remove(transaction);
+        } else {
+          // If the request fails, we don't remove the transaction and try again later
+          print("Failed to send transaction: $transaction");
+        }
+      }
+
+      // Update the local storage with the remaining transactions (if any failed)
+      await prefs.setStringList('transactions', savedTransactions);
+    }
   }
 
   // Function to listen for incoming SMS
@@ -137,20 +228,28 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> sendTransaction(String transactionId, String paidPrice) async {
-    final url = Uri.parse('http://localhost:3000/transactions');
-    final response = await http.post(
-      url,
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({
-        'transactionId': transactionId,
-        'paidPrice': paidPrice,
-      }),
-    );
+    ConnectivityResult result = await Connectivity().checkConnectivity();
 
-    if (response.statusCode == 201) {
-      print('Transaction sent successfully');
+    if (result == ConnectivityResult.mobile ||
+        result == ConnectivityResult.wifi) {
+      final url = Uri.parse('http://localhost:3000/transactions');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'transactionId': transactionId,
+          'paidPrice': paidPrice,
+        }),
+      );
+      if (response.statusCode == 201) {
+        print('Transaction sent successfully');
+      } else {
+        print('Failed to send transaction: ${response.body}');
+        await saveTransactionLocally(transactionId, paidPrice);
+      }
     } else {
-      print('Failed to send transaction: ${response.body}');
+      print('No internet connection. Saving transaction locally.');
+      await saveTransactionLocally(transactionId, paidPrice);
     }
   }
 
